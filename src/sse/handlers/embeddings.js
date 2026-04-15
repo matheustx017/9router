@@ -6,7 +6,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
-import { getModelInfo } from "../services/model.js";
+import { getModelInfo, getComboModels } from "../services/model.js";
 import { handleEmbeddingsCore } from "open-sse/handlers/embeddingsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -29,7 +29,7 @@ export async function handleEmbeddings(request) {
   }
 
   const url = new URL(request.url);
-  const modelStr = body.model;
+  let modelStr = body.model;
 
   log.request("POST", `${url.pathname} | ${modelStr}`);
 
@@ -65,7 +65,18 @@ export async function handleEmbeddings(request) {
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: input");
   }
 
-  const modelInfo = await getModelInfo(modelStr);
+  let modelInfo = await getModelInfo(modelStr);
+
+  // Resolve combo names (e.g. "embed" -> "ollama-local/embeddinggemma")
+  if (!modelInfo.provider) {
+    const comboModels = await getComboModels(modelStr);
+    if (comboModels && comboModels.length > 0) {
+      log.info("EMBEDDINGS", `Combo "${modelStr}" resolved to ${comboModels[0]}`);
+      modelStr = comboModels[0];
+      modelInfo = await getModelInfo(modelStr);
+    }
+  }
+
   if (!modelInfo.provider) {
     log.warn("EMBEDDINGS", "Invalid model format", { model: modelStr });
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");

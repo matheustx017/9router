@@ -15,6 +15,12 @@ function isGeminiProvider(provider) {
   return GEMINI_PROVIDERS.has(provider);
 }
 
+const OLLAMA_PROVIDERS = new Set(["ollama-local"]);
+
+function isOllamaProvider(provider) {
+  return OLLAMA_PROVIDERS.has(provider);
+}
+
 /**
  * Build the embeddings request body for the target provider.
  *
@@ -43,6 +49,11 @@ function buildEmbeddingsBody(provider, model, input, encodingFormat) {
         content: { parts: [{ text: String(input) }] }
       };
     }
+  }
+
+  // Ollama native /api/embed format: { model, input }
+  if (isOllamaProvider(provider)) {
+    return { model, input };
   }
 
   // Default: OpenAI format
@@ -78,6 +89,8 @@ function buildEmbeddingsUrl(provider, model, credentials, input) {
       return "https://api.openai.com/v1/embeddings";
     case "openrouter":
       return "https://openrouter.ai/api/v1/embeddings";
+    case "ollama-local":
+      return "http://localhost:11434/api/embed";
     default:
       // openai-compatible providers: use their baseUrl + /embeddings
       if (provider?.startsWith?.("openai-compatible-")) {
@@ -97,6 +110,10 @@ function buildEmbeddingsHeaders(provider, credentials) {
 
   if (isGeminiProvider(provider)) {
     // Gemini API uses API key as query param — no Authorization header needed
+    return headers;
+  }
+
+  if (provider === "ollama-local") {
     return headers;
   }
 
@@ -164,6 +181,25 @@ function normalizeEmbeddingsResponse(responseBody, model, provider) {
     };
   }
 
+  // Ollama returns { model, embeddings: [[...], [...]], prompt_eval_count }
+  if (isOllamaProvider(provider) && Array.isArray(responseBody.embeddings)) {
+    const embeddingItems = responseBody.embeddings.map((emb, idx) => ({
+      object: "embedding",
+      index: idx,
+      embedding: Array.isArray(emb) ? emb : []
+    }));
+
+    return {
+      object: "list",
+      data: embeddingItems,
+      model,
+      usage: {
+        prompt_tokens: responseBody.prompt_eval_count || 0,
+        total_tokens: responseBody.prompt_eval_count || 0
+      }
+    };
+  }
+
   // Try to handle alternate formats gracefully
   return responseBody;
 }
@@ -206,7 +242,7 @@ export async function handleEmbeddingsCore({
   if (!url) {
     return createErrorResult(
       HTTP_STATUS.BAD_REQUEST,
-      `Provider '${provider}' does not support embeddings. Use openai, openrouter, gemini, or an openai-compatible provider.`
+      `Provider '${provider}' does not support embeddings. Use openai, openrouter, gemini, ollama-local, or an openai-compatible provider.`
     );
   }
 

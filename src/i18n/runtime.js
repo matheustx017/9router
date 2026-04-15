@@ -128,16 +128,24 @@ export async function initRuntimeI18n() {
   await loadTranslations(currentLocale);
   
   // Process existing DOM
-  processElement(document.body);
-  
+  try {
+    processElement(document.body);
+  } catch {
+    /* ignore */
+  }
+
   // Watch for new nodes
   const observer = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
       mutation.addedNodes.forEach((node) => {
-        if (node.nodeType === Node.ELEMENT_NODE) {
-          processElement(node);
-        } else if (node.nodeType === Node.TEXT_NODE) {
-          processTextNode(node);
+        try {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            processElement(node);
+          } else if (node.nodeType === Node.TEXT_NODE) {
+            processTextNode(node);
+          }
+        } catch {
+          /* ignore during React DOM updates */
         }
       });
     });
@@ -151,12 +159,24 @@ export async function initRuntimeI18n() {
 
 // Reload translations when locale changes
 export async function reloadTranslations() {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+
   currentLocale = getLocaleFromCookie();
   await loadTranslations(currentLocale);
-  
+
   // Notify all registered callbacks
-  reloadCallbacks.forEach(callback => callback());
-  
+  reloadCallbacks.forEach((callback) => {
+    try {
+      callback();
+    } catch {
+      /* ignore subscriber errors */
+    }
+  });
+
   // Re-process entire DOM (will use stored original text)
-  processElement(document.body);
+  try {
+    processElement(document.body);
+  } catch {
+    // Avoid crashing the app if DOM is in an unexpected state during route transitions
+  }
 }

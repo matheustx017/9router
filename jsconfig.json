@@ -8,5 +8,14 @@
     },
     "module": "ESNext",
     "moduleResolution": "bundler"
-  }
+  },
+  "exclude": [
+    "node_modules",
+    ".next",
+    ".next/**",
+    "out",
+    "build",
+    "data",
+    "logs"
+  ]
 }

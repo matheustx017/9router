@@ -1,5 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  distDir: ".build",
+  experimental: {
+    lockDistDir: false,
+  },
   output: "standalone",
   serverExternalPackages: ["better-sqlite3"],
   images: {
@@ -18,6 +22,24 @@ const nextConfig = {
     // Stop watching logs directory to prevent HMR during streaming
     config.watchOptions = { ...config.watchOptions, ignored: /[\\/](logs|\.next)[\\/]/ };
     return config;
+  },
+  /**
+   * Prevent CDN (e.g. Cloudflare) from caching HTML/RSC across deploys.
+   * Cached old HTML + new chunk hashes = 404 on /_next/static/chunks/*.js ("Loading..." forever).
+   * Static assets under /_next/static remain cacheable (immutable filenames).
+   */
+  async headers() {
+    return [
+      {
+        source: "/((?!api/|_next/static|_next/image|favicon.ico|.*\\.(?:ico|png|jpg|jpeg|gif|webp|svg|woff2?|ttf|eot)).*)",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "private, no-cache, no-store, must-revalidate",
+          },
+        ],
+      },
+    ];
   },
   async rewrites() {
     return [

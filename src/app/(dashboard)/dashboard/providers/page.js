@@ -190,7 +190,7 @@ export default function ProvidersPage() {
     );
   };
 
-  const handleBatchTest = async (mode, providerId = null) => {
+  const handleBatchTest = async (mode, providerId = null, { force = false } = {}) => {
     if (testingMode) return;
     setTestingMode(mode === "provider" ? providerId : mode);
     setTestResults(null);
@@ -198,13 +198,14 @@ export default function ProvidersPage() {
       const res = await fetch("/api/providers/test-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, providerId }),
+        body: JSON.stringify({ mode, providerId, force }),
       });
       const data = await res.json();
       setTestResults(data);
       if (data.summary) {
-        const { passed, failed, total } = data.summary;
-        if (failed === 0) notify.success(`All ${total} tests passed`);
+        const { passed, failed, total, cached } = data.summary;
+        if (cached === total) notify.success(`All ${total} results from cache (valid for 7 days)`);
+        else if (failed === 0) notify.success(`All ${total} tests passed`);
         else notify.warning(`${passed}/${total} passed, ${failed} failed`);
       }
     } catch (error) {

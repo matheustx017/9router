@@ -1,27 +1,17 @@
 "use client";
 
 import { useEffect } from "react";
-import { usePathname } from "next/navigation";
-import { initRuntimeI18n, reloadTranslations } from "./runtime";
+import { initRuntimeI18n } from "./runtime";
 
+/**
+ * Client-side i18n: MutationObserver in initRuntimeI18n already picks up new DOM
+ * from route transitions. Re-running full-body translation on every pathname change
+ * could race React reconciliation and crash the app (Next generic error page).
+ */
 export function RuntimeI18nProvider({ children }) {
-  const pathname = usePathname();
-
   useEffect(() => {
-    initRuntimeI18n();
+    initRuntimeI18n().catch(() => {});
   }, []);
-
-  // Re-process DOM when route changes
-  useEffect(() => {
-    if (pathname) {
-      // Double RAF to ensure React has committed changes to DOM
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          reloadTranslations();
-        });
-      });
-    }
-  }, [pathname]);
 
   return <>{children}</>;
 }

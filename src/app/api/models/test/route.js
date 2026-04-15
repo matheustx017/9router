@@ -1,88 +1,104 @@
 import { NextResponse } from "next/server";
-import { getApiKeys } from "@/lib/localDb";
+import { handleChat } from "@/sse/handlers/chat.js";
+import { initTranslators } from "open-sse/translator/index.js";
+import { getApiKeys, getProviderConnections, updateProviderConnection } from "@/lib/localDb";
+import { getModelInfo } from "@/sse/services/model.js";
 
-// POST /api/models/test - Ping a single model via internal completions
+let initialized = false;
+
+async function ensureInitialized() {
+  if (initialized) return;
+  await initTranslators();
+  initialized = true;
+}
+
+const OLLAMA_EMBED_URLS = {
+  "ollama-local": "http://localhost:11434/api/embed",
+};
+
+async function tryDirectEmbedding(provider, modelName) {
+  const url = OLLAMA_EMBED_URLS[provider];
+  if (!url) return null;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: modelName, input: "test" }),
+    });
+    return { ok: res.ok, status: res.status };
+  } catch {
+    return { ok: false, status: 502 };
+  }
+}
+
+async function clearModelLock(provider, modelName) {
+  const connections = await getProviderConnections({ provider });
+  for (const conn of connections) {
+    const lockKey = `modelLock_${modelName}`;
+    if (conn[lockKey]) {
+      await updateProviderConnection(conn.id, {
+        [lockKey]: null,
+        testStatus: "active",
+        lastError: null,
+        lastErrorAt: null,
+        backoffLevel: 0,
+      });
+    }
+  }
+}
+
 export async function POST(request) {
   try {
     const { model } = await request.json();
     if (!model) return NextResponse.json({ error: "Model required" }, { status: 400 });
 
-    const baseUrl = process.env.BASE_URL ||
-      (() => { const u = new URL(request.url); return `${u.protocol}//${u.host}`; })();
+    await ensureInitialized();
 
-    // Get an active internal API key for auth (if requireApiKey is enabled)
-    let apiKey = null;
-    try {
-      const keys = await getApiKeys();
-      apiKey = keys.find((k) => k.isActive !== false)?.key || null;
-    } catch {}
+    const keys = await getApiKeys();
+    const apiKey = keys.find((k) => k.isActive !== false)?.key || null;
 
     const headers = { "Content-Type": "application/json" };
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
-    const start = Date.now();
-    const res = await fetch(`${baseUrl}/api/v1/chat/completions`, {
+    const testRequest = new Request("http://internal/api/v1/chat/completions", {
       method: "POST",
       headers,
       body: JSON.stringify({
         model,
-        max_tokens: 1,
+        messages: [{ role: "user", content: "Say OK" }],
+        max_tokens: 4,
         stream: false,
-        messages: [{ role: "user", content: "hi" }],
       }),
-      signal: AbortSignal.timeout(15000),
     });
-    const latencyMs = Date.now() - start;
 
-    const rawText = await res.text().catch(() => "");
-    let parsed = null;
+    const response = await handleChat(testRequest);
+    const status = response.status || 200;
+    const ok = status >= 200 && status < 300;
+
+    let body;
     try {
-      parsed = rawText ? JSON.parse(rawText) : null;
-    } catch {}
-
-    if (!res.ok) {
-      const detail = parsed?.error?.message || parsed?.msg || parsed?.message || parsed?.error || rawText;
-      const error = `HTTP ${res.status}${detail ? `: ${String(detail).slice(0, 240)}` : ""}`;
-      return NextResponse.json({ ok: false, latencyMs, error, status: res.status });
+      body = await response.json();
+    } catch {
+      try { body = { message: await response.text() }; } catch { body = {}; }
     }
 
-    // Some providers may return HTTP 200 but not a real completion for invalid models.
-    const providerStatus = parsed?.status;
-    const providerMsg = parsed?.msg || parsed?.message;
-    const hasProviderErrorStatus = providerStatus !== undefined
-      && providerStatus !== null
-      && String(providerStatus) !== "200"
-      && String(providerStatus) !== "0";
-    if (hasProviderErrorStatus && providerMsg) {
-      return NextResponse.json({
-        ok: false,
-        latencyMs,
-        status: res.status,
-        error: `Provider status ${providerStatus}: ${String(providerMsg).slice(0, 240)}`,
-      });
+    if (ok) {
+      return NextResponse.json({ ok, status, ...body });
     }
 
-    if (parsed?.error) {
-      const providerError = parsed?.error?.message || parsed?.error || "Provider returned an error";
-      return NextResponse.json({
-        ok: false,
-        latencyMs,
-        status: res.status,
-        error: String(providerError).slice(0, 240),
-      });
+    const errorText = String(body?.error?.message || body?.error || body?.message || "");
+    if (/does not support (chat|generate)/i.test(errorText)) {
+      const modelInfo = await getModelInfo(model);
+      if (modelInfo.provider) {
+        const embResult = await tryDirectEmbedding(modelInfo.provider, modelInfo.model);
+        if (embResult?.ok) {
+          await clearModelLock(modelInfo.provider, modelInfo.model);
+          return NextResponse.json({ ok: true, status: 200, type: "embedding" });
+        }
+      }
     }
 
-    const hasChoices = Array.isArray(parsed?.choices) && parsed.choices.length > 0;
-    if (!hasChoices) {
-      return NextResponse.json({
-        ok: false,
-        latencyMs,
-        status: res.status,
-        error: "Provider returned no completion choices for this model",
-      });
-    }
-
-    return NextResponse.json({ ok: true, latencyMs, error: null, status: res.status });
+    return NextResponse.json({ ok, status, ...body }, { status: ok ? 200 : status });
   } catch (err) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
   }

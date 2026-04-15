@@ -35,9 +35,13 @@ function getUserDataDir() {
 const DATA_DIR = getUserDataDir();
 const DB_FILE = isCloud ? null : path.join(DATA_DIR, "db.json");
 
-// Ensure data directory exists
+// Ensure data directory exists (must not throw during layout import → 500 on all routes)
 if (!isCloud && !fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  } catch (err) {
+    console.error("[localDb] Failed to create DATA_DIR:", DATA_DIR, err);
+  }
 }
 
 // Default data structure
@@ -46,6 +50,7 @@ const defaultData = {
   providerNodes: [],
   proxyPools: [],
   modelAliases: {},
+  modelHealth: [],
   mitmAlias: {},
   combos: [],
   apiKeys: [],
@@ -65,14 +70,25 @@ const defaultData = {
     observabilityMaxJsonSize: 1024,
     outboundProxyEnabled: false,
     outboundProxyUrl: "",
-    outboundNoProxy: ""
+    outboundNoProxy: "",
+    modelHealthEnabled: true,
+    modelHealthIntervalHours: 4,
+    modelHealthFullSweepHours: 24,
+    modelHealthMaxConcurrency: 4,
+    modelHealthHideUnavailableInSelector: true,
+    modelHealthSkipCooldownInCombos: true,
+    modelHealthSkipUnavailableInCombos: true,
   },
   pricing: {} // NEW: pricing configuration
 };
 
 // Seed db.json with defaults on first run so proper-lockfile never hits ENOENT
 if (!isCloud && DB_FILE && !fs.existsSync(DB_FILE)) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(defaultData, null, 2));
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(defaultData, null, 2));
+  } catch (err) {
+    console.error("[localDb] Failed to seed db.json:", DB_FILE, err);
+  }
 }
 
 function cloneDefaultData() {
@@ -81,6 +97,7 @@ function cloneDefaultData() {
     providerNodes: [],
     proxyPools: [],
     modelAliases: {},
+    modelHealth: [],
     mitmAlias: {},
     combos: [],
     apiKeys: [],
@@ -101,6 +118,13 @@ function cloneDefaultData() {
       outboundProxyEnabled: false,
       outboundProxyUrl: "",
       outboundNoProxy: "",
+      modelHealthEnabled: true,
+      modelHealthIntervalHours: 4,
+      modelHealthFullSweepHours: 24,
+      modelHealthMaxConcurrency: 4,
+      modelHealthHideUnavailableInSelector: true,
+      modelHealthSkipCooldownInCombos: true,
+      modelHealthSkipUnavailableInCombos: true,
     },
     pricing: {},
   };
@@ -856,6 +880,133 @@ export async function deleteCombo(id) {
   db.data.combos.splice(index, 1);
   await safeWrite(db);
   return true;
+}
+
+// ============ Model Health ============
+
+function normalizeModelHealthRecord(record = {}, existingRecord = null) {
+  const now = new Date().toISOString();
+  return {
+    modelKey: record.modelKey,
+    providerId: record.providerId || null,
+    providerAlias: record.providerAlias || null,
+    modelId: record.modelId || null,
+    status: record.status || "unknown",
+    reasonType: record.reasonType || null,
+    source: record.source || null,
+    lastCheckedAt: record.lastCheckedAt || now,
+    lastSuccessAt: record.lastSuccessAt || existingRecord?.lastSuccessAt || null,
+    lastFailureAt: record.lastFailureAt || existingRecord?.lastFailureAt || null,
+    lastLatencyMs: record.lastLatencyMs ?? existingRecord?.lastLatencyMs ?? null,
+    error: record.error ?? existingRecord?.error ?? null,
+    errorCode: record.errorCode ?? existingRecord?.errorCode ?? null,
+    consecutiveFailures: record.consecutiveFailures ?? existingRecord?.consecutiveFailures ?? 0,
+    ttlUntil: record.ttlUntil ?? existingRecord?.ttlUntil ?? null,
+    createdAt: existingRecord?.createdAt || now,
+    updatedAt: now,
+  };
+}
+
+/**
+ * Get model health records
+ */
+export async function getModelHealth(filter = {}) {
+  const db = await getDb();
+  let records = db.data.modelHealth || [];
+
+  if (filter.modelKeys?.length) {
+    const keySet = new Set(filter.modelKeys);
+    records = records.filter((record) => keySet.has(record.modelKey));
+  }
+
+  if (filter.providerId) {
+    records = records.filter((record) => record.providerId === filter.providerId);
+  }
+
+  if (filter.status) {
+    records = records.filter((record) => record.status === filter.status);
+  }
+
+  return records;
+}
+
+/**
+ * Get model health by canonical model key
+ */
+export async function getModelHealthByKey(modelKey) {
+  if (!modelKey) return null;
+  const db = await getDb();
+  return (db.data.modelHealth || []).find((record) => record.modelKey === modelKey) || null;
+}
+
+/**
+ * Create or update model health record
+ */
+export async function upsertModelHealth(record) {
+  if (!record?.modelKey) {
+    throw new Error("modelKey is required");
+  }
+
+  const db = await getDb();
+  if (!db.data.modelHealth) db.data.modelHealth = [];
+
+  const index = db.data.modelHealth.findIndex((item) => item.modelKey === record.modelKey);
+  const existingRecord = index >= 0 ? db.data.modelHealth[index] : null;
+  const nextRecord = normalizeModelHealthRecord(record, existingRecord);
+
+  if (index >= 0) {
+    db.data.modelHealth[index] = nextRecord;
+  } else {
+    db.data.modelHealth.push(nextRecord);
+  }
+
+  await safeWrite(db);
+  return nextRecord;
+}
+
+/**
+ * Bulk create or update model health records
+ */
+export async function bulkUpsertModelHealth(records = []) {
+  if (!Array.isArray(records) || records.length === 0) return [];
+
+  const db = await getDb();
+  if (!db.data.modelHealth) db.data.modelHealth = [];
+
+  const byKey = new Map((db.data.modelHealth || []).map((record) => [record.modelKey, record]));
+
+  for (const record of records) {
+    if (!record?.modelKey) continue;
+    byKey.set(record.modelKey, normalizeModelHealthRecord(record, byKey.get(record.modelKey) || null));
+  }
+
+  db.data.modelHealth = Array.from(byKey.values());
+  await safeWrite(db);
+  return db.data.modelHealth;
+}
+
+/**
+ * Delete model health records
+ */
+export async function deleteModelHealth(filter = {}) {
+  const db = await getDb();
+  if (!db.data.modelHealth) return 0;
+
+  const before = db.data.modelHealth.length;
+  const modelKeySet = filter.modelKeys?.length ? new Set(filter.modelKeys) : null;
+
+  db.data.modelHealth = db.data.modelHealth.filter((record) => {
+    if (filter.providerId && record.providerId !== filter.providerId) return true;
+    if (modelKeySet && !modelKeySet.has(record.modelKey)) return true;
+    if (!filter.providerId && !modelKeySet) return false;
+    return false;
+  });
+
+  const deleted = before - db.data.modelHealth.length;
+  if (deleted > 0) {
+    await safeWrite(db);
+  }
+  return deleted;
 }
 
 // ============ API Keys ============

@@ -13,8 +13,9 @@ const LOG_LEVEL_COLORS = {
 };
 
 function colorLine(line) {
-  const match = line.match(/\[(\w+)\]/g);
-  const levelTag = match ? match[1]?.replace(/\[|\]/g, "") : null;
+  // First bracket tag only (match() with /g has no capture groups; match[1] was wrong)
+  const match = line.match(/\[(\w+)\]/);
+  const levelTag = match?.[1] ?? null;
   const color = LOG_LEVEL_COLORS[levelTag] || "text-green-400";
   return <span className={color}>{line}</span>;
 }
@@ -39,7 +40,12 @@ export default function ConsoleLogClient() {
     es.onopen = () => setConnected(true);
 
     es.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
+      let msg;
+      try {
+        msg = JSON.parse(e.data);
+      } catch {
+        return;
+      }
       if (msg.type === "init") {
         setLogs(msg.logs.slice(-CONSOLE_LOG_CONFIG.maxLines));
       } else if (msg.type === "line") {

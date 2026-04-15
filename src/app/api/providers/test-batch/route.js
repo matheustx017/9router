@@ -81,8 +81,33 @@ export async function POST(request) {
       });
     }
 
+    const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+    const force = body.force === true;
+
     const results = [];
     for (const conn of connectionsToTest) {
+      if (
+        !force &&
+        conn.lastTestedAt &&
+        Date.now() - new Date(conn.lastTestedAt).getTime() < CACHE_TTL_MS &&
+        (conn.testStatus === "active" || conn.testStatus === "success" || conn.testStatus === "error")
+      ) {
+        results.push({
+          provider: conn.provider,
+          connectionId: conn.id,
+          connectionName: conn.name || conn.email || conn.provider,
+          authType: conn.authType || getAuthGroup(conn.provider, conn),
+          valid: conn.testStatus === "active" || conn.testStatus === "success",
+          latencyMs: conn.lastTestLatencyMs || 0,
+          error: conn.lastError || null,
+          diagnosis: null,
+          statusCode: null,
+          testedAt: conn.lastTestedAt,
+          cached: true,
+        });
+        continue;
+      }
+
       try {
         const data = await testSingleConnection(conn.id);
         results.push({
@@ -113,6 +138,7 @@ export async function POST(request) {
       }
     }
 
+    const cachedCount = results.filter((r) => r.cached).length;
     return NextResponse.json({
       mode,
       providerId: providerId || null,
@@ -122,6 +148,7 @@ export async function POST(request) {
         total: results.length,
         passed: results.filter((r) => r.valid).length,
         failed: results.filter((r) => !r.valid).length,
+        cached: cachedCount,
       },
     });
   } catch (error) {

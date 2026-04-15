@@ -38,6 +38,12 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
       return { shouldFallback: true, cooldownMs: COOLDOWN_MS.paymentRequired };
     }
 
+    // Embedding-only models: "does not support chat/generate" is permanent, not transient.
+    // Don't lock the account -- it's a model capability issue, not a connection issue.
+    if (lowerError.includes("does not support chat") || lowerError.includes("does not support generate")) {
+      return { shouldFallback: false, cooldownMs: 0 };
+    }
+
     // Rate limit keywords - exponential backoff
     if (
       lowerError.includes("rate limit") ||

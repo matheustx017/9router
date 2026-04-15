@@ -303,7 +303,7 @@ function ModelItem({ index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown
           onClick={() => setEditing(true)}
           title="Click to edit"
         >
-          {model}
+          <span className="truncate">{model}</span>
         </div>
       )}
 

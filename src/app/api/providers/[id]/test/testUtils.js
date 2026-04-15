@@ -548,10 +548,13 @@ export async function testSingleConnection(id) {
 
   const latencyMs = Date.now() - start;
 
+  const now = new Date().toISOString();
   const updateData = {
     testStatus: result.valid ? "active" : "error",
     lastError: result.valid ? null : result.error,
-    lastErrorAt: result.valid ? null : new Date().toISOString(),
+    lastErrorAt: result.valid ? null : now,
+    lastTestedAt: now,
+    lastTestLatencyMs: latencyMs,
   };
 
   if (result.refreshed && result.newTokens) {
@@ -564,5 +567,5 @@ export async function testSingleConnection(id) {
 
   await updateProviderConnection(id, updateData);
 
-  return { valid: result.valid, error: result.error, latencyMs, testedAt: new Date().toISOString() };
+  return { valid: result.valid, error: result.error, latencyMs, testedAt: now };
 }

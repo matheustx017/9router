@@ -36,18 +36,47 @@ async function hasValidToken(request) {
   }
 }
 
-async function isAuthenticated(request) {
-  if (await hasValidToken(request)) return true;
-  // Allow if requireLogin is disabled
+// Self-fetch on every middleware invocation (document + RSC + prefetch + HMR) floods dev logs and adds latency.
+const REQUIRE_LOGIN_CACHE_TTL_MS =
+  process.env.NODE_ENV === "development" ? 15_000 : 8_000;
+
+let requireLoginCache = {
+  /** @type {boolean | null} */
+  allowAnonymous: null,
+  expires: 0,
+};
+
+/** True when settings allow using the app without login (requireLogin === false). Cached briefly. */
+async function getAllowAnonymousFromSettings(request) {
+  const now = Date.now();
+  if (
+    requireLoginCache.allowAnonymous !== null &&
+    now < requireLoginCache.expires
+  ) {
+    return requireLoginCache.allowAnonymous;
+  }
   const origin = request.nextUrl.origin;
   try {
     const res = await fetch(`${origin}/api/settings/require-login`);
     const data = await res.json();
-    if (data.requireLogin === false) return true;
+    const allowAnonymous = data.requireLogin === false;
+    requireLoginCache = {
+      allowAnonymous,
+      expires: now + REQUIRE_LOGIN_CACHE_TTL_MS,
+    };
+    return allowAnonymous;
   } catch {
-    // On error, require login
+    requireLoginCache = {
+      allowAnonymous: false,
+      expires: now + REQUIRE_LOGIN_CACHE_TTL_MS,
+    };
+    return false;
   }
-  return false;
+}
+
+async function isAuthenticated(request) {
+  if (await hasValidToken(request)) return true;
+  return getAllowAnonymousFromSettings(request);
 }
 
 export async function proxy(request) {
@@ -82,15 +111,8 @@ export async function proxy(request) {
       }
     }
 
-    const origin = request.nextUrl.origin;
-    try {
-      const res = await fetch(`${origin}/api/settings/require-login`);
-      const data = await res.json();
-      if (data.requireLogin === false) {
-        return NextResponse.next();
-      }
-    } catch (err) {
-      // On error, require login
+    if (await getAllowAnonymousFromSettings(request)) {
+      return NextResponse.next();
     }
     return NextResponse.redirect(new URL("/login", request.url));
   }

@@ -19,6 +19,23 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 
+const EMBEDDING_ONLY_MODELS = new Set([
+  "embeddinggemma",
+  "nomic-embed-text", "nomic-embed-text:latest",
+  "mxbai-embed-large", "mxbai-embed-large:latest",
+  "all-minilm", "all-minilm:latest",
+  "snowflake-arctic-embed", "snowflake-arctic-embed:latest",
+  "bge-m3", "bge-m3:latest",
+  "bge-large-en-v1.5",
+  "text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002",
+]);
+
+function isEmbeddingOnlyModel(model) {
+  if (EMBEDDING_ONLY_MODELS.has(model)) return true;
+  const base = model.split(":")[0];
+  return base !== model && EMBEDDING_ONLY_MODELS.has(base);
+}
+
 /**
  * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
@@ -86,19 +103,32 @@ export async function handleChat(request, clientRawRequest = null) {
   // Check if model is a combo (has multiple models with fallback)
   const comboModels = await getComboModels(modelStr);
   if (comboModels) {
-    // Check for combo-specific strategy first, fallback to global
+    const allEmbedding = comboModels.every((m) => {
+      const parts = m.split("/");
+      const modelName = parts.length > 1 ? parts.slice(1).join("/") : m;
+      return isEmbeddingOnlyModel(modelName);
+    });
+    if (allEmbedding) {
+      log.warn("CHAT", `Combo "${modelStr}" contains only embedding models — use POST /v1/embeddings`);
+      return errorResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        `Combo "${modelStr}" contains only embedding models. Use POST /v1/embeddings instead of /v1/chat/completions.`
+      );
+    }
+
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
-    
+
     log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy})`);
+
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+      handleSingleModel: (nextBody, nextModel) => handleSingleModelChat(nextBody, nextModel, clientRawRequest, request, apiKey),
       log,
       comboName: modelStr,
-      comboStrategy
+      comboStrategy,
     });
   }
 
@@ -117,19 +147,14 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const comboModels = await getComboModels(modelStr);
     if (comboModels) {
       const chatSettings = await getSettings();
-      // Check for combo-specific strategy first, fallback to global
-      const comboStrategies = chatSettings.comboStrategies || {};
-      const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
-      const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
-      
-      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy})`);
-      return handleComboChat({
+      return handleHealthyCombo({
         body,
-        models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
-        log,
         comboName: modelStr,
-        comboStrategy
+        comboModels,
+        clientRawRequest,
+        request,
+        apiKey,
+        settings: chatSettings,
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
@@ -137,6 +162,14 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   }
 
   const { provider, model } = modelInfo;
+
+  if (isEmbeddingOnlyModel(model)) {
+    log.warn("CHAT", `Model '${provider}/${model}' is embedding-only — use POST /v1/embeddings`);
+    return errorResponse(
+      HTTP_STATUS.BAD_REQUEST,
+      `Model '${provider}/${model}' is embedding-only. Use POST /v1/embeddings instead of /v1/chat/completions.`
+    );
+  }
 
   // Log model routing (alias → actual model)
   if (modelStr !== `${provider}/${model}`) {
@@ -162,7 +195,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         const errorMsg = lastError || credentials.lastError || "Unavailable";
         const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
         log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
-        return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
+          return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
@@ -214,7 +247,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
     });
 
-    if (result.success) return result.response;
+    if (result.success) {
+      return result.response;
+    }
 
     // Mark account unavailable (auto-calculates cooldown with exponential backoff)
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model);

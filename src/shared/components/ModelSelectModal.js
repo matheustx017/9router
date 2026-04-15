@@ -180,8 +180,8 @@ export default function ModelSelectModal({
     return combos.filter(c => c.name.toLowerCase().includes(query));
   }, [combos, searchQuery]);
 
-  // Filter models by search query
-  const filteredGroups = useMemo(() => {
+  // Filter models by search query (no health filtering)
+  const displayGroups = useMemo(() => {
     if (!searchQuery.trim()) return groupedModels;
 
     const query = searchQuery.toLowerCase();
@@ -274,7 +274,7 @@ export default function ModelSelectModal({
         )}
 
         {/* Provider models */}
-        {Object.entries(filteredGroups).map(([providerId, group]) => (
+        {Object.entries(displayGroups).map(([providerId, group]) => (
           <div key={providerId}>
             {/* Provider header */}
             <div className="flex items-center gap-1.5 mb-1.5 sticky top-0 bg-surface py-0.5">
@@ -300,7 +300,7 @@ export default function ModelSelectModal({
                     onClick={() => handleSelect(model)}
                     title={isPlaceholder ? "Select to pre-fill, then edit model ID in the input" : undefined}
                     className={`
-                      px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer
+                      px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer inline-flex items-center gap-1.5
                       ${isPlaceholder
                         ? "border-dashed border-border text-text-muted hover:border-primary/50 hover:text-primary bg-surface italic"
                         : isSelected
@@ -327,7 +327,7 @@ export default function ModelSelectModal({
           </div>
         ))}
 
-        {Object.keys(filteredGroups).length === 0 && filteredCombos.length === 0 && (
+        {Object.keys(displayGroups).length === 0 && filteredCombos.length === 0 && (
           <div className="text-center py-4 text-text-muted">
             <span className="material-symbols-outlined text-2xl mb-1 block">
               search_off
@@ -353,4 +353,3 @@ ModelSelectModal.propTypes = {
   title: PropTypes.string,
   modelAliases: PropTypes.object,
 };
-

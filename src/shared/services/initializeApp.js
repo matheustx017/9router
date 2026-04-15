@@ -94,6 +94,7 @@ export async function initializeApp() {
 
     // Auto-start MITM if it was enabled before restart
     autoStartMitm();
+
   } catch (error) {
     console.error("[InitApp] Error:", error);
   }

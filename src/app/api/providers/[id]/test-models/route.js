@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
-import { getProviderConnectionById, getApiKeys } from "@/lib/localDb";
+import { getProviderConnectionById, updateProviderConnection, getApiKeys } from "@/lib/localDb";
 import { getProviderModels, PROVIDER_ID_TO_ALIAS } from "open-sse/config/providerModels.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
+
+const MODEL_TEST_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
  * Get an active API key to pass through auth when requireApiKey is enabled.
@@ -53,9 +55,28 @@ async function pingModel(modelId, baseUrl, apiKey) {
 export async function POST(request, { params }) {
   try {
     const { id } = await params;
+    const body = await request.json().catch(() => ({}));
+    const force = body.force === true;
+
     const connection = await getProviderConnectionById(id);
     if (!connection) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    }
+
+    const cached = connection.modelTestResults;
+    if (
+      !force &&
+      cached &&
+      cached.testedAt &&
+      Date.now() - new Date(cached.testedAt).getTime() < MODEL_TEST_CACHE_TTL_MS
+    ) {
+      return NextResponse.json({
+        provider: connection.provider,
+        connectionId: id,
+        results: cached.results,
+        testedAt: cached.testedAt,
+        cached: true,
+      });
     }
 
     const providerId = connection.provider;
@@ -64,7 +85,6 @@ export async function POST(request, { params }) {
 
     let models = getProviderModels(alias);
 
-    // Compatible providers: fetch live model list
     if (isCompatible && models.length === 0) {
       try {
         const modelsRes = await fetch(`${getBaseUrl(request)}/api/providers/${id}/models`);
@@ -82,8 +102,6 @@ export async function POST(request, { params }) {
     const baseUrl = getBaseUrl(request);
     const apiKey = await getInternalApiKey();
 
-    // Warm up with first model to trigger token refresh (if needed) before parallel calls.
-    // This prevents race condition where multiple requests concurrently refresh the same token.
     const [first, ...rest] = models;
     const firstResult = await pingModel(`${alias}/${first.id}`, baseUrl, apiKey);
     const results = [{ modelId: first.id, name: first.name || first.id, ...firstResult }];
@@ -98,7 +116,12 @@ export async function POST(request, { params }) {
       results.push(...restResults);
     }
 
-    return NextResponse.json({ provider: providerId, connectionId: id, results });
+    const testedAt = new Date().toISOString();
+    await updateProviderConnection(id, {
+      modelTestResults: { results, testedAt },
+    });
+
+    return NextResponse.json({ provider: providerId, connectionId: id, results, testedAt });
   } catch (error) {
     console.log("Error testing models:", error);
     return NextResponse.json({ error: "Test failed" }, { status: 500 });
