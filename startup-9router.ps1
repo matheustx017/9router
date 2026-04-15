@@ -2,44 +2,40 @@ $ErrorActionPreference = "Stop"
 
 $projectDir = "C:\Users\LocalServer\Documents\GitHub\9router"
 $logFile = Join-Path $projectDir "startup-9router.log"
-$nodeExe = "C:\Program Files\nodejs\node.exe"
-$pm2Bin = "C:\Users\LocalServer\AppData\Roaming\npm\node_modules\pm2\bin\pm2"
-$pm2Home = "C:\Users\LocalServer\.pm2"
-$assetScript = Join-Path $projectDir "scripts\prepare-standalone-assets.mjs"
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-
-function Invoke-Pm2 {
-    param(
-        [Parameter(ValueFromRemainingArguments = $true)]
-        [string[]]$Arguments
-    )
-
-    & $nodeExe $pm2Bin @Arguments
-}
+$runtimeScript = Join-Path $projectDir "scripts\9router-runtime.ps1"
 
 try {
-    if (-not (Test-Path $nodeExe)) { throw "node.exe not found at $nodeExe" }
-    if (-not (Test-Path $pm2Bin)) { throw "PM2 binary not found at $pm2Bin" }
-    if (-not (Test-Path $assetScript)) { throw "Asset sync script not found at $assetScript" }
+    if (-not (Test-Path $runtimeScript)) { throw "runtime helpers not found at $runtimeScript" }
 
-    $env:PM2_HOME = $pm2Home
     Set-Location $projectDir
+    . $runtimeScript
 
-    "[$timestamp] Startup task running." | Add-Content $logFile
-    (& $nodeExe $assetScript 2>&1 | Out-String) | Add-Content $logFile
-    (Invoke-Pm2 resurrect 2>&1 | Out-String) | Add-Content $logFile
+    Write-9RouterLog -LogFile $logFile -Message "Startup task running in global CLI mode."
 
-    Start-Sleep -Seconds 10
+    $cliPath = Get-9RouterCliPath
+    Stop-9RouterListeners -Port 20128 -LogFile $logFile
+    Start-9RouterCli -CliPath $cliPath -LogFile $logFile -Port 20128 | Out-Null
 
-    $pidOutput = (Invoke-Pm2 pid 9router 2>$null | Out-String).Trim()
-    if (-not $pidOutput -or $pidOutput -eq "0") {
-        "[$timestamp] 9router not online after resurrect, starting ecosystem config." | Add-Content $logFile
-        (Invoke-Pm2 start ".\ecosystem.config.cjs" 2>&1 | Out-String) | Add-Content $logFile
-        (Invoke-Pm2 save 2>&1 | Out-String) | Add-Content $logFile
+    $validated = $false
+    for ($attempt = 1; $attempt -le 6; $attempt++) {
+        Start-Sleep -Seconds 5
+        try {
+            Test-9RouterServedAssets -Port 20128 | Out-Null
+            $validated = $true
+            break
+        } catch {
+            Write-9RouterLog -LogFile $logFile -Message "Startup validation attempt $attempt failed: $_"
+        }
     }
 
-    "[$timestamp] Startup task completed." | Add-Content $logFile
+    if (-not $validated) {
+        throw "Global CLI validation failed after startup."
+    }
+
+    Write-9RouterLog -LogFile $logFile -Message "Startup validation passed."
+    Write-9RouterLog -LogFile $logFile -Message "Startup task completed."
 } catch {
-    "[$timestamp] Startup task failed: $_" | Add-Content $logFile
+    Write-9RouterLog -LogFile $logFile -Message "Startup task failed: $_"
     exit 1
 }

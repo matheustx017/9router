@@ -1,32 +1,29 @@
 $ErrorActionPreference = "SilentlyContinue"
 $logFile = "C:\Users\LocalServer\Documents\GitHub\9router\health-check.log"
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-$nodeExe = "C:\Program Files\nodejs\node.exe"
-$pm2Bin = "C:\Users\LocalServer\AppData\Roaming\npm\node_modules\pm2\bin\pm2"
-$env:PM2_HOME = "C:\Users\LocalServer\.pm2"
+$projectDir = "C:\Users\LocalServer\Documents\GitHub\9router"
+$runtimeScript = Join-Path $projectDir "scripts\9router-runtime.ps1"
 
-function Invoke-Pm2 {
-    param(
-        [Parameter(ValueFromRemainingArguments = $true)]
-        [string[]]$Arguments
-    )
-
-    & $nodeExe $pm2Bin @Arguments
+if (Test-Path $runtimeScript) {
+    . $runtimeScript
 }
 
 try {
-    $response = Invoke-WebRequest -Uri "http://localhost:20128" -TimeoutSec 5 -UseBasicParsing
-    if ($response.StatusCode -ne 200) { throw "Status $($response.StatusCode)" }
+    Test-9RouterServedAssets -Port 20128 | Out-Null
 } catch {
     "$timestamp - 9Router DOWN ($_) - reiniciando..." | Add-Content $logFile
-    Invoke-Pm2 restart 9router
-    Start-Sleep -Seconds 15
+
+    $cliPath = Get-9RouterCliPath
+    Stop-9RouterListeners -Port 20128 -LogFile $logFile
+    Start-9RouterCli -CliPath $cliPath -LogFile $logFile -Port 20128 | Out-Null
+    "$timestamp - Started global CLI as fallback." | Add-Content $logFile
+
+    Start-Sleep -Seconds 10
 
     try {
-        $retry = Invoke-WebRequest -Uri "http://localhost:20128" -TimeoutSec 5 -UseBasicParsing
-        if ($retry.StatusCode -ne 200) { throw "Status $($retry.StatusCode)" }
+        Test-9RouterServedAssets -Port 20128 | Out-Null
     } catch {
-        "$timestamp - 9Router ainda indisponivel, executando task de boot..." | Add-Content $logFile
+        "$timestamp - 9Router still down after restart, running boot task..." | Add-Content $logFile
         Start-ScheduledTask -TaskName "9Router-BootStart"
         Start-Sleep -Seconds 20
     }

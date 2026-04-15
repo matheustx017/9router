@@ -966,11 +966,8 @@ export MACHINE_ID_SALT="endpoint-proxy-salt"
 # Start
 npm run start
 
-# Or use PM2
-npm install -g pm2
-pm2 start npm --name 9router -- start
-pm2 save
-pm2 startup
+# On Windows, prefer a single boot mechanism such as Task Scheduler.
+# Do not run PM2 in parallel with another auto-start flow for the same app/port.
 ```
 
 ### Docker
